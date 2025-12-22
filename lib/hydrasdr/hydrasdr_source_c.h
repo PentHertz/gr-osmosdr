@@ -30,7 +30,7 @@
 
 #include <gnuradio/sync_block.h>
 
-#include "hydrasdr_wrapper.h"
+#include <libhydrasdr/hydrasdr.h>
 
 #include "source_iface.h"
 

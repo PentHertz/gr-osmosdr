@@ -29,7 +29,7 @@
 
 #include <gnuradio/sync_block.h>
 
-#include "airspy_wrapper.h"
+#include <libairspy/airspy.h>
 
 #include "source_iface.h"
 
