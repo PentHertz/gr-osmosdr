@@ -97,11 +97,25 @@ hydrasdr_source_c::hydrasdr_source_c (const std::string &args)
     _bandwidth(0)
 {
   int ret;
-
-  dict_t dict = params_to_dict(args);
-
   _dev = NULL;
-  ret = hydrasdr_open( &_dev );
+  dict_t dict = params_to_dict(args);
+  if (dict["hydrasdr"] == "")
+    dict["hydrasdr"] = "0";
+
+  // the block below allows one to open hydrasdr by serial number
+  // 2016-Apr-5 - by Lawrence Glaister VE7IT  ve7it@shaw.ca
+  // (allowing multiple hydrasdr source blocks to be used) Note: each hydrasdr should be
+  // plugged into its own USB bus controller to support the high data rates involved.
+  // osmocom Source block usage: Device arguments:  hydrasdr=0x644064DC317C1FCD
+  // if no device arguments are given or s/n=0, the first found hydrasdr device will be used
+  // use hydrasdr_info utility to identify device serial number strings
+  uint64_t sn;
+  std::stringstream ss;
+  ss << std::hex << dict["hydrasdr"];
+  ss >> sn;
+  std::cerr << "Attempting to open hydrasdr by s/n= "
+            <<  boost::format("0x%016X") % (sn) << std::endl;
+  ret = hydrasdr_open_sn( &_dev, sn );
   HYDRASDR_THROW_ON_ERROR(ret, "Failed to open HydraSDR device")
 
   uint8_t board_id;
@@ -112,11 +126,15 @@ hydrasdr_source_c::hydrasdr_source_c (const std::string &args)
   memset(version, 0, sizeof(version));
   ret = hydrasdr_version_string_read( _dev, version, sizeof(version));
   HYDRASDR_THROW_ON_ERROR(ret, "Failed to read version string")
-#if 0
+
   hydrasdr_read_partid_serialno_t part_serial;
   ret = hydrasdr_board_partid_serialno_read( _dev, &part_serial );
   HYDRASDR_THROW_ON_ERROR(ret, "Failed to read serial number")
-#endif
+  std::cerr << "Opened Device Serial Number=    "
+    << boost::format("0x%08X") % (part_serial.serial_no[2])
+    << boost::format("%08X")   % (part_serial.serial_no[3])
+    << std::endl;
+
   uint32_t num_rates;
   hydrasdr_get_samplerates(_dev, &num_rates, 0);
   uint32_t *samplerates = (uint32_t *) malloc(num_rates * sizeof(uint32_t));
@@ -189,14 +207,14 @@ hydrasdr_source_c::~hydrasdr_source_c ()
       ret = hydrasdr_stop_rx( _dev );
       if ( ret != HYDRASDR_SUCCESS )
       {
-        std::cerr << HYDRASDR_FORMAT_ERROR(ret, "Failed to stop RX streaming") << std::endl;
+        std::cerr << HYDRASDR_FORMAT_ERROR(ret, "hydrasdr_source_c::~hydrasdr_source_c: Failed to stop RX streaming") << std::endl;
       }
     }
 
     ret = hydrasdr_close( _dev );
     if ( ret != HYDRASDR_SUCCESS )
     {
-      std::cerr << HYDRASDR_FORMAT_ERROR(ret, "Failed to close HydraSDR") << std::endl;
+      std::cerr << HYDRASDR_FORMAT_ERROR(ret, "hydrasdr_source_c::~hydrasdr_source_c: Failed to close HydraSDR") << std::endl;
     }
     _dev = NULL;
   }
@@ -256,7 +274,7 @@ bool hydrasdr_source_c::start()
 
   int ret = hydrasdr_start_rx( _dev, _hydrasdr_rx_callback, (void *)this );
   if ( ret != HYDRASDR_SUCCESS ) {
-    std::cerr << "Failed to start RX streaming (" << ret << ")" << std::endl;
+    std::cerr << "hydrasdr_source_c::start: Failed to start RX streaming (" << ret << ")" << std::endl;
     return false;
   }
 
@@ -270,7 +288,7 @@ bool hydrasdr_source_c::stop()
 
   int ret = hydrasdr_stop_rx( _dev );
   if ( ret != HYDRASDR_SUCCESS ) {
-    std::cerr << "Failed to stop RX streaming (" << ret << ")" << std::endl;
+    std::cerr << "hydrasdr_source_c::stop: Failed to stop RX streaming (" << ret << ")" << std::endl;
     return false;
   }
 
@@ -288,8 +306,10 @@ int hydrasdr_source_c::work( int noutput_items,
   if ( _dev )
     running = (hydrasdr_is_streaming( _dev ) == HYDRASDR_TRUE);
 
-  if ( ! running )
+  if ( ! running ) {
+    std::cerr << "hydrasdr_source_c::work: unexpectedly stopped running" << std::endl;
     return WORK_DONE;
+  }
 
   std::unique_lock<std::mutex> lock(_fifo_lock);
 
@@ -297,7 +317,11 @@ int hydrasdr_source_c::work( int noutput_items,
   int n_samples_avail = _fifo->size();
 
   while (n_samples_avail < noutput_items) {
-    _samp_avail.wait(lock);
+    //_samp_avail.wait(lock);
+    if (_samp_avail.wait_for(lock, std::chrono::milliseconds(500)) == std::cv_status::timeout) {
+      std::cerr << "hydrasdr_source_c::work: timeout waiting for samples" << std::endl;
+      return WORK_DONE;
+    }
     n_samples_avail = _fifo->size();
   }
 
